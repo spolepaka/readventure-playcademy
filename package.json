@@ -1,0 +1,19 @@
+{
+  "name": "readventure",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@playcademy/vite-plugin": "^0.2.6",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4"
+  },
+  "dependencies": {
+    "@playcademy/sdk": "latest"
+  }
+}
