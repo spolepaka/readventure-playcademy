@@ -63,6 +63,10 @@ export class SpaceReadingGame {
   private powerPathStartTime: number = 0;
   private powerPathTimerInterval: number | null = null;
   
+  // Store PowerPath instances per tile to resume progress
+  private powerPathPerTile: Map<number, PowerPath100> = new Map();
+  private powerPathStartTimePerTile: Map<number, number> = new Map();
+  
   constructor(config: GameConfig, storyData: StoryData) {
     console.log('🎮 SpaceReadingGame constructor called');
     console.log('📊 Story data:', storyData);
@@ -314,33 +318,53 @@ export class SpaceReadingGame {
 
     console.log(`📚 Article tile: ${this.guidingQuestions.length} guiding + ${this._quizQuestions.length} quiz questions`);
 
-    // Initialize PowerPath 100 algorithm
-    const powerPathGuiding = this.guidingQuestions.map(q => convertToPowerPathQuestion(q));
-    const powerPathQuiz = this._quizQuestions.map(q => convertToPowerPathQuestion(q));
+    // Check if we have an existing PowerPath for this tile (resume progress)
+    const existingPowerPath = this.powerPathPerTile.get(this.currentTile);
     
-    this.powerPath = new PowerPath100(
-      powerPathGuiding,
-      powerPathQuiz,
-      (stats) => this.updatePowerPathUI(stats)
-    );
+    if (existingPowerPath && !existingPowerPath.isComplete()) {
+      // Resume existing PowerPath session
+      this.powerPath = existingPowerPath;
+      this.powerPathStartTime = this.powerPathStartTimePerTile.get(this.currentTile) || Date.now();
+      
+      const stats = this.powerPath.getStats();
+      console.log(`🔄 Resuming PowerPath for tile ${this.currentTile}`);
+      console.log(`📊 Current progress: Score=${stats.score}, Questions=${stats.questionsAnswered}, Accuracy=${stats.accuracy}%`);
+    } else {
+      // Create new PowerPath for this tile
+      const powerPathGuiding = this.guidingQuestions.map(q => convertToPowerPathQuestion(q));
+      const powerPathQuiz = this._quizQuestions.map(q => convertToPowerPathQuestion(q));
+      
+      this.powerPath = new PowerPath100(
+        powerPathGuiding,
+        powerPathQuiz,
+        (stats) => this.updatePowerPathUI(stats)
+      );
+      
+      // Store for later resumption
+      this.powerPathPerTile.set(this.currentTile, this.powerPath);
+      this.powerPathStartTime = Date.now();
+      this.powerPathStartTimePerTile.set(this.currentTile, this.powerPathStartTime);
+      
+      console.log(`🚀 PowerPath 100 initialized for tile ${this.currentTile}`);
+      const counts = this.powerPath.getQuestionCounts();
+      console.log(`📊 Quiz difficulty distribution: Easy=${counts.easy}, Medium=${counts.medium}, Hard=${counts.hard}`);
+      
+      // Reset tile results tracking only for new sessions
+      this.currentTileGuidingResults = [];
+      this.currentTileQuizResults = [];
+    }
     
-    // Start PowerPath timer
-    this.powerPathStartTime = Date.now();
+    // Start/resume PowerPath timer
     this.startPowerPathTimer();
     
-    console.log(`🚀 PowerPath 100 initialized with ${powerPathGuiding.length} guiding + ${powerPathQuiz.length} quiz questions`);
-    const counts = this.powerPath.getQuestionCounts();
-    console.log(`📊 Quiz difficulty distribution: Easy=${counts.easy}, Medium=${counts.medium}, Hard=${counts.hard}`);
+    // Update UI with current stats
+    this.updatePowerPathUI(this.powerPath.getStats());
 
-    this.isInGuidingPhase = true;
+    this.isInGuidingPhase = this.powerPath.getCurrentPhase() === 'guiding';
     this._currentFullGameQuestion = 0;
     this.currentSectionQuestion = 0;
-    
-    // Reset tile results tracking
-    this.currentTileGuidingResults = [];
-    this.currentTileQuizResults = [];
 
-    // Load first question using PowerPath
+    // Load next question using PowerPath
     this.loadNextPowerPathQuestion();
     this.showScreen('reading-screen');
   }
@@ -1022,17 +1046,29 @@ export class SpaceReadingGame {
   }
 
   continueTileResults(): void {
-    // Calculate accuracy
-    const totalGuiding = this.currentTileGuidingResults.length;
-    const correctGuiding = this.currentTileGuidingResults.filter(r => r.correct).length;
-    const totalQuiz = this.currentTileQuizResults.length;
-    const correctQuiz = this.currentTileQuizResults.filter(r => r.correct).length;
-    const totalQuestions = totalGuiding + totalQuiz;
-    const totalCorrect = correctGuiding + correctQuiz;
-    const accuracy = totalQuestions > 0 ? Math.round((totalCorrect / totalQuestions) * 100) : 0;
+    // Determine if passed - use PowerPath if available, otherwise use accuracy
+    let passed: boolean;
+    let accuracy: number;
     
-    const passThreshold = this.config.gameFlow.passThresholdPercent || 90;
-    const passed = accuracy >= passThreshold;
+    if (this.powerPath) {
+      // With PowerPath, "passed" means reaching score of 100
+      const stats = this.powerPath.getStats();
+      passed = stats.isComplete;
+      accuracy = stats.accuracy;
+      console.log(`🎯 PowerPath mode: Score=${stats.score}, isComplete=${passed}`);
+    } else {
+      // Legacy mode - use accuracy threshold
+      const totalGuiding = this.currentTileGuidingResults.length;
+      const correctGuiding = this.currentTileGuidingResults.filter(r => r.correct).length;
+      const totalQuiz = this.currentTileQuizResults.length;
+      const correctQuiz = this.currentTileQuizResults.filter(r => r.correct).length;
+      const totalQuestions = totalGuiding + totalQuiz;
+      const totalCorrect = correctGuiding + correctQuiz;
+      accuracy = totalQuestions > 0 ? Math.round((totalCorrect / totalQuestions) * 100) : 0;
+      
+      const passThreshold = this.config.gameFlow.passThresholdPercent || 90;
+      passed = accuracy >= passThreshold;
+    }
     
     // Mark tile as completed
     this.tilesCompleted[this.currentTile] = true;
@@ -1051,10 +1087,10 @@ export class SpaceReadingGame {
         tileElement?.appendChild(checkmark);
       }
       
-      console.log(`✅ Tile ${this.currentTile} PASSED with ${accuracy}% (threshold: ${passThreshold}%)`);
+      console.log(`✅ Tile ${this.currentTile} PASSED (PowerPath: ${!!this.powerPath})`);
     } else {
       tileElement?.classList.add('attempted');
-      console.log(`❌ Tile ${this.currentTile} did not pass: ${accuracy}% (threshold: ${passThreshold}%)`);
+      console.log(`❌ Tile ${this.currentTile} did not pass - accuracy: ${accuracy}%`);
     }
     
     // Unlock next tile if linear progression (remove lock icon only, NOT the blur)
